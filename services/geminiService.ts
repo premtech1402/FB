@@ -3,7 +3,9 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { Expense, Category } from '../types';
 
 // Initialize the Gemini AI client
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+const ai = new GoogleGenAI({
+  apiKey: import.meta.env.VITE_API_KEY
+});
 
 export const GeminiService = {
   /**
