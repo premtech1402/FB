@@ -1,18 +1,21 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
 import { Expense, Category } from '../types';
 
+// Read API key from Vite environment
+const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+
 // Initialize the Gemini AI client
 const ai = new GoogleGenAI({
-  apiKey: import.meta.env.VITE_API_KEY
+  apiKey: apiKey
 });
 
 export const GeminiService = {
+
   /**
    * Generates financial insights based on expense history
    */
   generateInsights: async (expenses: Expense[], categories: Category[]): Promise<string> => {
-    if (!process.env.API_KEY) {
+    if (!apiKey) {
       return "API Key is missing. Please configure the environment variable.";
     }
 
@@ -20,7 +23,7 @@ export const GeminiService = {
       return "No expenses recorded yet. Add some transactions to get AI insights!";
     }
 
-    // Prepare a lightweight summary to avoid token limits
+    // Prepare lightweight summary
     const totalSpend = expenses.reduce((sum, e) => sum + e.amount, 0);
     const categoryMap = categories.reduce((acc, cat) => {
       acc[cat.id] = cat.name;
@@ -62,24 +65,24 @@ export const GeminiService = {
   },
 
   /**
-   * Suggests a category based on the description using AI
+   * Suggests a category based on an expense description
    */
   suggestCategory: async (description: string, categories: Category[]): Promise<string | null> => {
-    if (!description || !process.env.API_KEY) return null;
+    if (!description || !apiKey) return null;
 
     const categoryList = categories.map(c => `${c.name} (ID: ${c.id})`).join(', ');
     
     const prompt = `
       You are a smart financial assistant.
       Task: Categorize the expense description: "${description}".
-      
+
       Available Categories:
       ${categoryList}
-      
+
       Rules:
       1. Understand abbreviations (e.g., "med" -> Medicine/Health).
       2. Understand Indian context (e.g., "kirana" -> Groceries, "auto" -> Transport, "swiggy" -> Food).
-      3. Return ONLY the JSON object with the "categoryId". If no good match, return null.
+      3. Return ONLY the JSON object with "categoryId". If no good match, return null.
     `;
 
     try {
@@ -96,7 +99,7 @@ export const GeminiService = {
           }
         }
       });
-      
+
       const result = JSON.parse(response.text || '{}');
       return result.categoryId || null;
     } catch (error) {
@@ -106,41 +109,31 @@ export const GeminiService = {
   },
 
   /**
-   * Maps a list of raw import categories to existing categories
+   * Maps raw import categories to existing categories
    */
   mapImportCategories: async (rawCategories: string[], existingCategories: Category[]): Promise<Record<string, string>> => {
-    if (rawCategories.length === 0 || !process.env.API_KEY) return {};
+    if (rawCategories.length === 0 || !apiKey) return {};
 
     const existingList = existingCategories.map(c => `${c.name} (ID: ${c.id})`).join(', ');
     const rawList = JSON.stringify(rawCategories);
 
     const prompt = `
       You are an expert Transaction Classifier.
-      Task: Map the provided list of "Raw Transaction Strings" (which could be descriptions, vendor names, or categories) to the "Existing App Category IDs".
+      Map Raw Transaction Strings to Existing App Category IDs.
 
-      Existing App Categories: 
+      Existing App Categories:
       ${existingList}
 
-      Raw Transaction Strings: 
+      Raw Transaction Strings:
       ${rawList}
       
-      CLASSIFICATION RULES:
-      1. **Sub-string Matching**: Look for keywords INSIDE the raw string.
-         - "anv med", "cb med", "apollo pharmacy" -> Contains "med", "pharmacy" -> Map to 'Health' Category ID.
-         - "dmart", "kirana store", "big basket" -> Map to 'Groceries' Category ID.
-         - "starbucks", "mcdonalds", "swiggy" -> Map to 'Food' Category ID.
-         - "uber", "ola", "shell fuel" -> Map to 'Transport' Category ID.
-      
-      2. **Prioritize Existing Categories**: Always try to find a fit in the Existing App Categories first. Only use "NEW" if it is a completely distinct concept (e.g., "Tuition Fees" when no Education category exists).
-      
-      3. **Ignore Junk**: If the string is generic like "UPI-123", "IMPS Transfer", "Debit Card", and you cannot determine the purpose, map it to 'Others' (find the ID for Others/General). Do NOT create a "NEW" category for generic banking terms.
+      Rules:
+      1. Sub-string matching.
+      2. Prefer existing categories.
+      3. Map unclear cases to Others.
+      4. Fixes: "med" -> Health, "food" -> Food, "kirana" -> Groceries, etc.
 
-      4. **Specific Fixes**:
-         - Any string with "med" (anv med, cb med) MUST go to Health.
-         - Any string with "food", "restaurant", "cafe" MUST go to Food.
-
-      Output Format:
-      Return a JSON object where keys are the Raw Transaction Strings (exactly as provided) and values are the **App Category ID** or "**NEW**".
+      Return a JSON object.
     `;
 
     try {
@@ -160,39 +153,20 @@ export const GeminiService = {
   },
 
   /**
-   * Analyzes an image of a receipt or handwritten notes
+   * Extracts expenses from an uploaded image
    */
-  parseExpenseImage: async (base64Image: string, categories: Category[]): Promise<Array<{ description: string, amount: number, date: string, categoryId: string }>> => {
-    if (!process.env.API_KEY) return [];
+  parseExpenseImage: async (
+    base64Image: string,
+    categories: Category[]
+  ): Promise<Array<{ description: string, amount: number, date: string, categoryId: string }>> => {
+    if (!apiKey) return [];
 
     const categoryList = categories.map(c => `${c.name} (ID: ${c.id})`).join(', ');
 
     const prompt = `
-      Analyze this image. It contains a list of expenses (handwritten or printed receipt).
-      
-      Your Goal: Extract each transaction.
-      
-      Available Categories:
-      ${categoryList}
-
-      Rules:
-      1. Extract the **Description**, **Amount**, and **Date**.
-      2. If date is missing, use today's date (${new Date().toISOString().split('T')[0]}).
-      3. **Categorize**: Choose the best matching Category ID from the list above based on the description. 
-         - If it looks like medicine/health, pick the Health ID.
-         - If it looks like food/restaurant, pick the Food ID.
-         - If uncertain, default to the 'Others' ID (or whichever ID represents General/Others).
-      4. Ignore totals/subtotals lines.
-      
-      Output JSON Format:
-      [
-        {
-          "description": "string",
-          "amount": number,
-          "date": "YYYY-MM-DD",
-          "categoryId": "string (must be one of the provided IDs)"
-        }
-      ]
+      Analyze this image and extract expenses.
+      Return JSON array with: description, amount, date, categoryId.
+      Use today's date if missing: ${new Date().toISOString().split('T')[0]}
     `;
 
     try {
@@ -206,9 +180,7 @@ export const GeminiService = {
                 data: base64Image
               }
             },
-            {
-              text: prompt
-            }
+            { text: prompt }
           ]
         },
         config: {
