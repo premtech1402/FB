@@ -6,7 +6,7 @@ const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
 // Initialize the Gemini AI client
 const ai = new GoogleGenAI({
-  apiKey: apiKey
+  apiKey
 });
 
 export const GeminiService = {
@@ -23,7 +23,6 @@ export const GeminiService = {
       return "No expenses recorded yet. Add some transactions to get AI insights!";
     }
 
-    // Prepare lightweight summary
     const totalSpend = expenses.reduce((sum, e) => sum + e.amount, 0);
     const categoryMap = categories.reduce((acc, cat) => {
       acc[cat.id] = cat.name;
@@ -42,13 +41,11 @@ export const GeminiService = {
       Total Spend: ${totalSpend}
       Recent Transactions: ${JSON.stringify(recentExpenses)}
       
-      Please provide a concise financial insight summary in markdown format. 
-      Include:
-      1. Spending patterns (what they spend most on).
-      2. One actionable tip to save money.
-      3. A brief budget recommendation.
-      
-      Keep the tone friendly and encouraging.
+      Provide a concise markdown summary including:
+      - Spending patterns
+      - One saving tip
+      - A short budget suggestion
+      Tone: Friendly and simple.
     `;
 
     try {
@@ -60,37 +57,37 @@ export const GeminiService = {
       return response.text || "Could not generate insights at this time.";
     } catch (error) {
       console.error("Gemini API Error:", error);
-      return "Sorry, I encountered an error while analyzing your finances. Please try again later.";
+      return "Sorry, an error occurred while generating insights.";
     }
   },
 
   /**
-   * Suggests a category based on an expense description
+   * Suggests a category for a description
    */
   suggestCategory: async (description: string, categories: Category[]): Promise<string | null> => {
     if (!description || !apiKey) return null;
 
     const categoryList = categories.map(c => `${c.name} (ID: ${c.id})`).join(', ');
-    
-    const prompt = `
-      You are a smart financial assistant.
-      Task: Categorize the expense description: "${description}".
 
-      Available Categories:
-      ${categoryList}
+    const prompt = `
+      Categorize the expense description: "${description}".
+      Categories: ${categoryList}
 
       Rules:
-      1. Understand abbreviations (e.g., "med" -> Medicine/Health).
-      2. Understand Indian context (e.g., "kirana" -> Groceries, "auto" -> Transport, "swiggy" -> Food).
-      3. Return ONLY the JSON object with "categoryId". If no good match, return null.
+      - "med" → Health
+      - "kirana" → Groceries
+      - "auto" → Transport
+      - "swiggy" / "food" → Food
+
+      Return JSON: { "categoryId": "ID" }
     `;
 
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: "gemini-2.5-flash",
         contents: prompt,
         config: {
-          responseMimeType: 'application/json',
+          responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
             properties: {
@@ -100,16 +97,16 @@ export const GeminiService = {
         }
       });
 
-      const result = JSON.parse(response.text || '{}');
+      const result = JSON.parse(response.text || "{}");
       return result.categoryId || null;
     } catch (error) {
-      console.error("AI Categorization Error", error);
+      console.error("AI Categorization Error:", error);
       return null;
     }
   },
 
   /**
-   * Maps raw import categories to existing categories
+   * Maps imported categories to existing categories
    */
   mapImportCategories: async (rawCategories: string[], existingCategories: Category[]): Promise<Record<string, string>> => {
     if (rawCategories.length === 0 || !apiKey) return {};
@@ -118,36 +115,31 @@ export const GeminiService = {
     const rawList = JSON.stringify(rawCategories);
 
     const prompt = `
-      You are an expert Transaction Classifier.
-      Map Raw Transaction Strings to Existing App Category IDs.
+      Map each Raw Transaction String to an Existing Category ID.
+      Existing Categories: ${existingList}
+      Raw Items: ${rawList}
 
-      Existing App Categories:
-      ${existingList}
-
-      Raw Transaction Strings:
-      ${rawList}
-      
       Rules:
-      1. Sub-string matching.
-      2. Prefer existing categories.
-      3. Map unclear cases to Others.
-      4. Fixes: "med" -> Health, "food" -> Food, "kirana" -> Groceries, etc.
+      - Substring detection
+      - Prefer existing categories
+      - Unknown → Others
+      - "med" → Health, "food" → Food, "kirana" → Groceries
 
-      Return a JSON object.
+      Return a JSON object mapping rawText → categoryId.
     `;
 
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: "gemini-2.5-flash",
         contents: prompt,
         config: {
-          responseMimeType: 'application/json'
+          responseMimeType: "application/json"
         }
       });
 
-      return JSON.parse(response.text || '{}');
+      return JSON.parse(response.text || "{}");
     } catch (error) {
-      console.error("AI Mapping Error", error);
+      console.error("AI Mapping Error:", error);
       return {};
     }
   },
@@ -159,36 +151,47 @@ export const GeminiService = {
     base64Image: string,
     categories: Category[]
   ): Promise<Array<{ description: string, amount: number, date: string, categoryId: string }>> => {
+
     if (!apiKey) return [];
 
-    const categoryList = categories.map(c => `${c.name} (ID: ${c.id})`).join(', ');
-
     const prompt = `
-      Analyze this image and extract expenses.
-      Return JSON array with: description, amount, date, categoryId.
-      Use today's date if missing: ${new Date().toISOString().split('T')[0]}
+      Analyze this image. Extract a list of expenses.
+      Return JSON array:
+      [
+        {
+          "description": "...",
+          "amount": number,
+          "date": "YYYY-MM-DD",
+          "categoryId": "ID"
+        }
+      ]
+
+      If date missing → use today: ${new Date().toISOString().split("T")[0]}.
     `;
 
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-3-pro-preview',
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                mimeType: 'image/jpeg',
-                data: base64Image
-              }
-            },
-            { text: prompt }
-          ]
-        },
+        model: "gemini-1.5-pro",   // <-- correct model for image + text
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                inlineData: {
+                  mimeType: "image/jpeg",
+                  data: base64Image
+                }
+              },
+              { text: prompt }
+            ]
+          }
+        ],
         config: {
-          responseMimeType: 'application/json'
+          responseMimeType: "application/json"
         }
       });
 
-      return JSON.parse(response.text || '[]');
+      return JSON.parse(response.text || "[]");
     } catch (error) {
       console.error("Image Analysis Error", error);
       return [];
