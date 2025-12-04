@@ -1,22 +1,24 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { Expense, Category } from '../types';
+import { Expense, Category } from "../types";
 
 // Read API key from Vite environment
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
-// Initialize the Gemini AI client
-const ai = new GoogleGenAI({
-  apiKey
-});
+// Initialize Gemini Client
+const ai = new GoogleGenAI({ apiKey });
 
 export const GeminiService = {
-
   /**
-   * Generates financial insights based on expense history
+   * --------------------------------------------
+   * 1. Generate AI Insights
+   * --------------------------------------------
    */
-  generateInsights: async (expenses: Expense[], categories: Category[]): Promise<string> => {
+  generateInsights: async (
+    expenses: Expense[],
+    categories: Category[]
+  ): Promise<string> => {
     if (!apiKey) {
-      return "API Key is missing. Please configure the environment variable.";
+      return "API Key is missing. Please configure VITE_GEMINI_API_KEY.";
     }
 
     if (expenses.length === 0) {
@@ -24,62 +26,64 @@ export const GeminiService = {
     }
 
     const totalSpend = expenses.reduce((sum, e) => sum + e.amount, 0);
+
     const categoryMap = categories.reduce((acc, cat) => {
       acc[cat.id] = cat.name;
       return acc;
     }, {} as Record<string, string>);
 
-    const recentExpenses = expenses.slice(0, 50).map(e => ({
+    const recentExpenses = expenses.slice(-20).map((e) => ({
       amount: e.amount,
-      category: categoryMap[e.categoryId] || 'Unknown',
+      category: categoryMap[e.categoryId] || "Unknown",
       desc: e.description,
-      date: e.date
+      date: e.date,
     }));
 
     const prompt = `
       Analyze the following personal finance data.
       Total Spend: ${totalSpend}
       Recent Transactions: ${JSON.stringify(recentExpenses)}
-      
+
       Provide a concise markdown summary including:
       - Spending patterns
       - One saving tip
-      - A short budget suggestion
+      - One budget suggestion
       Tone: Friendly and simple.
     `;
 
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: "gemini-2.5-flash",
         contents: prompt,
       });
 
-      return response.text || "Could not generate insights at this time.";
-    } catch (error) {
-      console.error("Gemini API Error:", error);
-      return "Sorry, an error occurred while generating insights.";
+      return response.text || "Could not generate insights.";
+    } catch (err) {
+      console.error("Gemini Error:", err);
+      return "AI failed to generate insights.";
     }
   },
 
   /**
-   * Suggests a category for a description
+   * --------------------------------------------
+   * 2. Auto-Suggest Category
+   * --------------------------------------------
    */
-  suggestCategory: async (description: string, categories: Category[]): Promise<string | null> => {
+  suggestCategory: async (
+    description: string,
+    categories: Category[]
+  ): Promise<string | null> => {
     if (!description || !apiKey) return null;
 
-    const categoryList = categories.map(c => `${c.name} (ID: ${c.id})`).join(', ');
+    const categoryList = categories
+      .map((c) => `${c.name} (ID: ${c.id})`)
+      .join(", ");
 
     const prompt = `
-      Categorize the expense description: "${description}".
+      Categorize this expense: "${description}"
       Categories: ${categoryList}
 
-      Rules:
-      - "med" → Health
-      - "kirana" → Groceries
-      - "auto" → Transport
-      - "swiggy" / "food" → Food
-
-      Return JSON: { "categoryId": "ID" }
+      Return ONLY JSON: { "categoryId": "ID" }
     `;
 
     try {
@@ -90,111 +94,122 @@ export const GeminiService = {
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
-            properties: {
-              categoryId: { type: Type.STRING }
-            }
-          }
-        }
+            properties: { categoryId: { type: Type.STRING } },
+          },
+        },
       });
 
       const result = JSON.parse(response.text || "{}");
       return result.categoryId || null;
-    } catch (error) {
-      console.error("AI Categorization Error:", error);
+    } catch (err) {
+      console.error("Category Suggestion Error:", err);
       return null;
     }
   },
 
   /**
-   * Maps imported categories to existing categories
+   * --------------------------------------------
+   * 3. Excel/CSV → Category Mapping
+   * --------------------------------------------
    */
-  mapImportCategories: async (rawCategories: string[], existingCategories: Category[]): Promise<Record<string, string>> => {
+  mapImportCategories: async (
+    rawCategories: string[],
+    existingCategories: Category[]
+  ): Promise<Record<string, string>> => {
     if (rawCategories.length === 0 || !apiKey) return {};
 
-    const existingList = existingCategories.map(c => `${c.name} (ID: ${c.id})`).join(', ');
-    const rawList = JSON.stringify(rawCategories);
+    const existingList = existingCategories
+      .map((c) => `${c.name} (ID: ${c.id})`)
+      .join(", ");
 
     const prompt = `
-      Map each Raw Transaction String to an Existing Category ID.
+      Map each string to an existing category ID.
       Existing Categories: ${existingList}
-      Raw Items: ${rawList}
+      Raw Items: ${JSON.stringify(rawCategories)}
 
-      Rules:
-      - Substring detection
-      - Prefer existing categories
-      - Unknown → Others
-      - "med" → Health, "food" → Food, "kirana" → Groceries
-
-      Return a JSON object mapping rawText → categoryId.
+      Return JSON: { "rawText": "categoryId" }
     `;
 
     try {
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
         contents: prompt,
-        config: {
-          responseMimeType: "application/json"
-        }
+        config: { responseMimeType: "application/json" },
       });
 
       return JSON.parse(response.text || "{}");
-    } catch (error) {
-      console.error("AI Mapping Error:", error);
+    } catch (err) {
+      console.error("Mapping Error:", err);
       return {};
     }
   },
 
   /**
-   * Extracts expenses from an uploaded image
+   * --------------------------------------------
+   * 4. Image → Expense Extraction (FINAL FIXED VERSION)
+   * --------------------------------------------
    */
   parseExpenseImage: async (
     base64Image: string,
-    categories: Category[]
-  ): Promise<Array<{ description: string, amount: number, date: string, categoryId: string }>> => {
-
+    categories: Category[],
+    mimeType: string = "image/jpeg"
+  ): Promise<
+    Array<{
+      description: string;
+      amount: number;
+      date: string;
+      categoryId: string;
+    }>
+  > => {
     if (!apiKey) return [];
 
+    const today = new Date().toISOString().split("T")[0];
+
     const prompt = `
-      Analyze this image. Extract a list of expenses.
-      Return JSON array:
+      Extract expenses from the image.
+      Return ONLY a JSON array:
       [
         {
-          "description": "...",
+          "description": "text",
           "amount": number,
           "date": "YYYY-MM-DD",
           "categoryId": "ID"
         }
       ]
 
-      If date missing → use today: ${new Date().toISOString().split("T")[0]}.
+      If date missing → use "${today}".
     `;
 
     try {
       const response = await ai.models.generateContent({
-        model: "gemini-1.5-pro",   // <-- correct model for image + text
+        model: "gemini-1.5-pro", // supports image + text
         contents: [
           {
             role: "user",
             parts: [
               {
                 inlineData: {
-                  mimeType: "image/jpeg",
-                  data: base64Image
-                }
+                  mimeType,
+                  data: base64Image,
+                },
               },
-              { text: prompt }
-            ]
-          }
+              { text: prompt },
+            ],
+          },
         ],
         config: {
-          responseMimeType: "application/json"
-        }
+          responseMimeType: "application/json",
+        },
       });
 
-      return JSON.parse(response.text || "[]");
-    } catch (error) {
-      console.error("Image Analysis Error", error);
+      // Correct extraction from Gemini response
+      const jsonText =
+        response?.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
+
+      return JSON.parse(jsonText);
+    } catch (err) {
+      console.error("Image AI Error:", err);
       return [];
     }
-  }
+  },
 };
